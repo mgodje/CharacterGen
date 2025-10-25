@@ -259,6 +259,25 @@ def main(
     vae = AutoencoderKL.from_pretrained(pretrained_model_path, subfolder="vae")
     unet = UNetMV2DConditionModel.from_pretrained_2d(pretrained_model_path, subfolder="unet", local_crossattn=local_crossattn, **unet_from_pretrained_kwargs)
     ref_unet = UNetMV2DRefModel.from_pretrained_2d(pretrained_model_path, subfolder="unet", local_crossattn=local_crossattn, **unet_from_pretrained_kwargs)
+
+    # --- BEGIN: make attention processors ignore extra kwargs like num_views ---
+    try:
+        from diffusers.models.attention_processor import AttnProcessor2_0
+
+        class KwdropAttn(AttnProcessor2_0):
+            # Accept any extra kwargs and ignore them so older/newer stacks interop
+            def __call__(self, attn, hidden_states, encoder_hidden_states=None, attention_mask=None, **kwargs):
+                return super().__call__(attn, hidden_states, encoder_hidden_states, attention_mask)
+
+        # Install the wrapper on all attention modules in both UNets
+        unet.set_attn_processor(KwdropAttn())
+        ref_unet.set_attn_processor(KwdropAttn())
+
+        print("[webui] Installed KwdropAttn to ignore unsupported attention kwargs.")
+    except Exception as e:
+        print("[webui] Skipping attention processor override:", e)
+    # --- END: make attention processors ignore extra kwargs like num_views ---
+
     if use_pose_guider:
         pose_guider = PoseGuider(noise_latent_channels=4).to("cuda")
     else:

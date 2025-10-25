@@ -16,39 +16,64 @@ class ReferenceOnlyAttnProc(torch.nn.Module):
         self.name = name
 
     def __call__(
-        self, attn, hidden_states, encoder_hidden_states=None, attention_mask=None,
-        mode="w", ref_dict: dict = None, is_cfg_guidance = False,num_views=4,
-            multiview_attention=True,
-            cross_domain_attention=False,
-    ) -> Any:
+    self, 
+    attn, 
+    hidden_states, 
+    encoder_hidden_states=None, 
+    attention_mask=None,
+    mode="w", 
+    ref_dict: dict = None, 
+    is_cfg_guidance=False, 
+    num_views=4,
+    multiview_attention=True,
+    cross_domain_attention=False,   # ok to keep for compatibility
+):
         if encoder_hidden_states is None:
             encoder_hidden_states = hidden_states
-        # print(self.enabled)
+
         if self.enabled:
             if mode == 'w':
+                # write reference
                 ref_dict[self.name] = encoder_hidden_states
-                res = self.chained_proc(attn, hidden_states, encoder_hidden_states, attention_mask, num_views=1,
+                # ⚠️ do NOT pass cross_domain_attention to chained_proc
+                res = self.chained_proc(
+                    attn, hidden_states, encoder_hidden_states, attention_mask,
+                    num_views=1,
                     multiview_attention=False,
-                    cross_domain_attention=False,)
+                )
             elif mode == 'r':
+                # read reference
                 encoder_hidden_states = rearrange(encoder_hidden_states, '(b t) d c-> b (t d) c', t=num_views)
                 if self.name in ref_dict:
-                    encoder_hidden_states = torch.cat([encoder_hidden_states, ref_dict.pop(self.name)], dim=1).unsqueeze(1).repeat(1,num_views,1,1).flatten(0,1)
-                res = self.chained_proc(attn, hidden_states, encoder_hidden_states, attention_mask, num_views=num_views,
+                    encoder_hidden_states = torch.cat(
+                        [encoder_hidden_states, ref_dict.pop(self.name)], dim=1
+                    ).unsqueeze(1).repeat(1, num_views, 1, 1).flatten(0, 1)
+
+                res = self.chained_proc(
+                    attn, hidden_states, encoder_hidden_states, attention_mask,
+                    num_views=num_views,
                     multiview_attention=False,
-                    cross_domain_attention=False,)
+                )
             elif mode == 'm':
+                # merge only, no call to chained_proc here
                 encoder_hidden_states = torch.cat([encoder_hidden_states, ref_dict[self.name]], dim=1)
+                # If you actually need an output here, forward once:
+                res = self.chained_proc(attn, hidden_states, encoder_hidden_states, attention_mask)
             elif mode == 'n':
+                # no-ref multi-view
                 encoder_hidden_states = rearrange(encoder_hidden_states, '(b t) d c-> b (t d) c', t=num_views)
-                encoder_hidden_states = torch.cat([encoder_hidden_states], dim=1).unsqueeze(1).repeat(1,num_views,1,1).flatten(0,1)
-                res = self.chained_proc(attn, hidden_states, encoder_hidden_states, attention_mask, num_views=num_views,
+                encoder_hidden_states = torch.cat([encoder_hidden_states], dim=1).unsqueeze(1).repeat(1, num_views, 1, 1).flatten(0, 1)
+
+                res = self.chained_proc(
+                    attn, hidden_states, encoder_hidden_states, attention_mask,
+                    num_views=num_views,
                     multiview_attention=False,
-                    cross_domain_attention=False,)
+                )
             else:
-                assert False, mode
+                raise AssertionError(mode)
         else:
             res = self.chained_proc(attn, hidden_states, encoder_hidden_states, attention_mask)
+
         return res
         
 class RefOnlyNoisedUNet(torch.nn.Module):
