@@ -159,6 +159,46 @@ def process_image(image, totensor):
     # new_image.save("input.png")
     return totensor(image)
 
+def apply_style_filter(pil_img: Image.Image, style: str) -> Image.Image:
+    """
+    Simple post-processing color styles for the generated character views.
+    """
+    if style is None or style == "None":
+        return pil_img
+
+    img = pil_img.convert("RGB")
+    arr = np.array(img).astype(np.float32) / 255.0  # [0,1]
+
+    if style == "Warm":
+        # Slight red/yellow boost
+        arr[..., 0] *= 1.08  # R
+        arr[..., 1] *= 1.03  # G
+        arr[..., 2] *= 0.96  # B
+
+    elif style == "Cool":
+        # Slight blue/cyan boost
+        arr[..., 2] *= 1.08  # B
+        arr[..., 0] *= 0.96  # R
+
+    elif style == "Pastel":
+        # Lift shadows, soften contrast
+        arr = 0.7 * arr + 0.3
+
+    elif style == "High contrast":
+        # Stronger contrast around midtones
+        arr = (arr - 0.5) * 1.3 + 0.5
+
+    elif style == "Film noir":
+        # Grayscale + mild contrast bump
+        gray = 0.3 * arr[..., 0] + 0.59 * arr[..., 1] + 0.11 * arr[..., 2]
+        arr = np.stack([gray, gray, gray], axis=-1)
+        arr = (arr - 0.5) * 1.2 + 0.5
+
+    # Clip to valid [0,1]
+    arr = np.clip(arr, 0.0, 1.0)
+    arr = (arr * 255).astype(np.uint8)
+    return Image.fromarray(arr)
+
 class Inference_API:
 
     def __init__(self):
@@ -166,7 +206,7 @@ class Inference_API:
 
     @torch.no_grad()
     def inference(self, input_image, vae, feature_extractor, image_encoder, unet, ref_unet, tokenizer, text_encoder, pretrained_model_path, generator, validation, val_width, val_height, unet_condition_type,
-                    pose_guider=None, use_noise=True, use_shifted_noise=False, noise_d=256, crop=False, seed=100, timestep=20):
+                    pose_guider=None, use_noise=True, use_shifted_noise=False, noise_d=256, crop=False, seed=100, timestep=20, style: str = "None"):
         set_seed(seed)
         # Get the validation pipeline
         if self.validation_pipeline is None:
@@ -230,9 +270,15 @@ class Inference_API:
             save_image(out[bs], img_buf, format='PNG')
             img_buf.seek(0)
             img = Image.open(img_buf)
-            image_outputs.append(img)
+
+            # Apply your custom color style
+            styled_img = apply_style_filter(img, style)
+
+            image_outputs.append(styled_img)
+
         torch.cuda.empty_cache()
-        return image_outputs 
+        return image_outputs
+
 
 @torch.no_grad()
 def main(
@@ -308,7 +354,8 @@ def main(
     generator = torch.Generator(device="cuda")
     inferapi = Inference_API()
     remove_api = rm_bg_api()
-    def gen4views(image, width, height, seed, timestep, remove_bg):
+
+    def gen4views(image, width, height, seed, timestep, remove_bg, style):
         if remove_bg:
             image = remove_api.remove_background(
                 imgs=[np.array(image)],
@@ -319,8 +366,9 @@ def main(
             image, vae, feature_extractor, image_encoder, unet, ref_unet, tokenizer, text_encoder, pretrained_model_path,
             generator, validation, width, height, unet_condition_type,
             pose_guider=pose_guider, use_noise=use_noise, use_shifted_noise=use_shifted_noise, noise_d=noise_d,
-            crop=True, seed=seed, timestep=timestep
+            crop=True, seed=seed, timestep=timestep, style=style
         )
+
 
     with gr.Blocks() as demo:
         gr.Markdown("# [SIGGRAPH'24] CharacterGen: Efficient 3D Character Generation from Single Images with Multi-View Pose Calibration")
@@ -334,19 +382,27 @@ def main(
                     examples=glob.glob("./material/examples/*.png"),
                     inputs=[img_input]
                 )
-                with gr.Row():
-                    width_input = gr.Number(label="Width", value=512)
-                    height_input = gr.Number(label="Height", value=768)
-                    seed_input = gr.Number(label="Seed", value=2333)
-                    remove_bg = gr.Checkbox(label="Remove Background (with algorithm)", value=False)
-                timestep = gr.Slider(minimum=10, maximum=70, step=1, value=40, label="Timesteps")
+            with gr.Row():
+                width_input = gr.Number(label="Width", value=512)
+                height_input = gr.Number(label="Height", value=768)
+                seed_input = gr.Number(label="Seed", value=2333)
+                remove_bg = gr.Checkbox(label="Remove Background (with algorithm)", value=False)
+
+            timestep = gr.Slider(minimum=10, maximum=70, step=1, value=40, label="Timesteps")
+
+            style_input = gr.Dropdown(
+                label="Color Style",
+                choices=["None", "Warm", "Cool", "Pastel", "High contrast", "Film noir"],
+                value="None",
+            )
+
             with gr.Column():
                 button = gr.Button(value="Generate")
                 output = gr.Gallery(label="4 views of Character Image")
         
         button.click(
             fn=gen4views,
-            inputs=[img_input, width_input, height_input, seed_input, timestep, remove_bg],
+            inputs=[img_input, width_input, height_input, seed_input, timestep, remove_bg, style_input],
             outputs=[output]
         )
 
